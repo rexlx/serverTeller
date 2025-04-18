@@ -40,6 +40,27 @@ var (
 	logSize = flag.Int("size", 100, "Max size of log file in MB")
 )
 
+func rotateLog(filename string, maxSizeMB int) error {
+	fileInfo, err := os.Stat(filename)
+	if err != nil {
+		return err
+	}
+
+	fileSizeMB := fileInfo.Size() / (1024 * 1024)
+	if int(fileSizeMB) >= maxSizeMB {
+		timestamp := time.Now().Format("20060102150405")
+		rotatedFilename := filename + "." + timestamp
+
+		err := os.Rename(filename, rotatedFilename)
+		if err != nil {
+			return err
+		}
+
+		log.Printf("Rotated log file to: %s", rotatedFilename)
+	}
+	return nil
+}
+
 func handleLog(conn quic.Connection) {
 	stream, err := conn.AcceptStream(context.Background())
 	if err != nil {
@@ -71,7 +92,7 @@ func handleLog(conn quic.Connection) {
 
 		logEntry := LogEntry{
 			Timestamp: time.Now(),
-			Message:   fmt.Sprintf("(%v) %v", sl.Timestamp, sl.Message),
+			Message:   sl.Message,
 			Hostname:  sl.Hostname,
 		}
 
@@ -82,12 +103,13 @@ func handleLog(conn quic.Connection) {
 		}
 
 		go func() {
-			// start := time.Now()
-			// defer func() {
-			// 	duration := time.Since(start)
-			// 	log.Printf("Log entry processed in %s", duration)
-			// }()
-			file, err := os.OpenFile("logs.ndjson", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if *rotate {
+				if err := rotateLog(*logfile, *logSize); err != nil {
+					log.Printf("Error rotating log: %v", err)
+				}
+			}
+
+			file, err := os.OpenFile(*logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 			if err != nil {
 				log.Printf("Error opening file: %v", err)
 				return
@@ -129,15 +151,16 @@ func generateTLSConfig() *tls.Config {
 }
 
 func main() {
+	flag.Parse()
 	tlsConf := generateTLSConfig()
 
-	listener, err := quic.ListenAddr("0.0.0.0:8081", tlsConf, nil)
+	listener, err := quic.ListenAddr(*addr, tlsConf, nil)
 	if err != nil {
 		log.Fatalf("Error listening: %v", err)
 	}
 	defer listener.Close()
 
-	fmt.Println("QUIC server listening on :8081")
+	fmt.Println("QUIC server listening on", *addr)
 
 	for {
 		conn, err := listener.Accept(context.Background())
